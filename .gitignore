@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+uploads/
+.env
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.spec.bak
+sample_data/

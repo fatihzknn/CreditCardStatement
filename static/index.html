@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Credit Card Statement Analyzer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    :root {
+      --bg: #f0f2f5;
+      --card: #fff;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --text: #1f2937;
+      --text-muted: #6b7280;
+      --border: #e5e7eb;
+      --income: #059669;
+      --expense: #dc2626;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 1.5rem;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: 0.25rem; }
+    .subtitle { color: var(--text-muted); font-size: 0.95rem; margin-bottom: 1.5rem; }
+    .upload-zone {
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      padding: 2.5rem;
+      text-align: center;
+      background: var(--card);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .upload-zone:hover, .upload-zone.dragover {
+      border-color: var(--primary);
+      background: #eff6ff;
+    }
+    .upload-zone input { display: none; }
+    .upload-zone p { margin: 0; color: var(--text-muted); }
+    .upload-zone .hint { font-size: 0.85rem; margin-top: 0.5rem; }
+    .error { color: var(--expense); background: #fef2f2; padding: 1rem; border-radius: 8px; margin-top: 1rem; }
+    .loading { color: var(--text-muted); margin-top: 1rem; }
+    #results { margin-top: 1.5rem; }
+
+    /* Tabs */
+    .tabs {
+      display: flex;
+      gap: 0.25rem;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+    .tab {
+      padding: 0.6rem 1rem;
+      border: none;
+      background: var(--card);
+      color: var(--text-muted);
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    .tab:hover { color: var(--text); background: #f3f4f6; }
+    .tab.active { background: var(--primary); color: #fff; }
+    .tab-section { display: none; }
+    .tab-section.active { display: block; }
+
+    .summary-cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .card {
+      background: var(--card);
+      padding: 1.25rem;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .card .label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .card .value { font-size: 1.5rem; font-weight: 700; }
+    .card.income .value { color: var(--income); }
+    .card.expenses .value { color: var(--expense); }
+    .card.net .value { color: var(--primary); }
+    .income-inference {
+      background: #f0f9ff;
+      padding: 1rem;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+    }
+    .income-inference strong { display: block; margin-bottom: 0.25rem; }
+    .chart-container {
+      background: var(--card);
+      padding: 1.25rem;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      margin-bottom: 1rem;
+    }
+    .chart-container.clickable { cursor: pointer; }
+    .chart-container h4 { margin: 0 0 1rem 0; font-size: 1rem; }
+    .chart-wrapper { position: relative; height: 280px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-muted); font-weight: 600; font-size: 0.8rem; }
+    .amount-expense { color: var(--expense); font-weight: 500; }
+    .amount-income { color: var(--income); font-weight: 500; }
+    .section-card {
+      background: var(--card);
+      padding: 1.25rem;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      margin-bottom: 1rem;
+    }
+    .section-card h3 { margin: 0 0 1rem 0; font-size: 1.1rem; }
+
+    /* Modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--card);
+      border-radius: 12px;
+      max-width: 500px;
+      width: 100%;
+      max-height: 80vh;
+      overflow: hidden;
+      box-shadow: 0 20px 50px rgba(0,0,0,0.2);
+    }
+    .modal-header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .modal-header h3 { margin: 0; font-size: 1rem; }
+    .modal-close {
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      cursor: pointer;
+      color: var(--text-muted);
+      line-height: 1;
+    }
+    .modal-close:hover { color: var(--text); }
+    .modal-body {
+      padding: 1rem 1.25rem;
+      overflow-y: auto;
+      max-height: 60vh;
+    }
+    .modal-body table { font-size: 0.85rem; }
+    .modal-body th, .modal-body td { padding: 0.5rem 0; }
+
+    @media (max-width: 600px) {
+      .summary-cards { grid-template-columns: 1fr; }
+      .tabs { overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Credit Card Statement Analyzer</h1>
+  <p class="subtitle">Upload a monthly statement (CSV or PDF) to get smart expense grouping and recurring payment detection.</p>
+
+  <div class="upload-zone" id="uploadZone">
+    <input type="file" id="fileInput" accept=".csv,.pdf">
+    <p>Drop your statement here or click to browse</p>
+    <p class="hint">Supports CSV and PDF. Expected columns: date, description/merchant, amount.</p>
+  </div>
+
+  <div id="error" class="error" style="display:none"></div>
+  <div id="loading" class="loading" style="display:none">Analyzing...</div>
+
+  <div id="results" style="display:none">
+    <div class="tabs">
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="categories">Categories</button>
+      <button class="tab" data-tab="daily">Daily Spending</button>
+      <button class="tab" data-tab="recurring">Recurring</button>
+      <button class="tab" data-tab="other">Other</button>
+      <button class="tab" data-tab="transactions">All Transactions</button>
+    </div>
+
+    <div id="tab-overview" class="tab-section active">
+      <div class="summary-cards">
+        <div class="card income">
+          <div class="label">Income</div>
+          <div class="value" id="incomeVal">0</div>
+        </div>
+        <div class="card expenses">
+          <div class="label">Expenses</div>
+          <div class="value" id="expensesVal">0</div>
+        </div>
+        <div class="card net">
+          <div class="label">Net</div>
+          <div class="value" id="netVal">0</div>
+        </div>
+      </div>
+      <div class="income-inference" id="incomeInference"></div>
+      <div class="chart-container">
+        <h4>Expenses by Category</h4>
+        <div class="chart-wrapper"><canvas id="categoryChart"></canvas></div>
+      </div>
+    </div>
+
+    <div id="tab-categories" class="tab-section">
+      <div class="section-card">
+        <h3>Expenses by Category</h3>
+        <div class="chart-wrapper" style="height:320px"><canvas id="categoryChart2"></canvas></div>
+      </div>
+    </div>
+
+    <div id="tab-daily" class="tab-section">
+      <div class="chart-container clickable">
+        <h4>Daily Spending — Click a point to see that day's transactions</h4>
+        <div class="chart-wrapper"><canvas id="dailyChart"></canvas></div>
+      </div>
+    </div>
+
+    <div id="tab-recurring" class="tab-section">
+      <div class="section-card">
+        <h3>Recurring Payments</h3>
+        <div id="recurringList"></div>
+      </div>
+    </div>
+
+    <div id="tab-other" class="tab-section">
+      <div class="section-card">
+        <h3>"Other" Category Breakdown</h3>
+        <div id="othersBreakdown"></div>
+      </div>
+    </div>
+
+    <div id="tab-transactions" class="tab-section">
+      <div class="section-card">
+        <h3>All Transactions</h3>
+        <div id="transactionsList"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="dayModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modalTitle">Transactions for <span id="modalDate"></span></h3>
+        <button class="modal-close" id="modalClose">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
+  <script>
+    const uploadZone = document.getElementById('uploadZone');
+    const fileInput = document.getElementById('fileInput');
+    const errorEl = document.getElementById('error');
+    const loadingEl = document.getElementById('loading');
+    const resultsEl = document.getElementById('results');
+    let analysisData = null;
+    let categoryChart = null;
+    let categoryChart2 = null;
+    let dailyChart = null;
+
+    uploadZone.addEventListener('click', () => fileInput.click());
+    uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+    uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+    uploadZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length) handleFile(fileInput.files[0]);
+    });
+
+    document.querySelectorAll('.tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.tab-section').forEach(s => s.classList.remove('active'));
+        btn.classList.add('active');
+        document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      });
+    });
+
+    document.getElementById('modalClose').addEventListener('click', () => {
+      document.getElementById('dayModal').classList.remove('open');
+    });
+    document.getElementById('dayModal').addEventListener('click', (e) => {
+      if (e.target.id === 'dayModal') e.target.classList.remove('open');
+    });
+
+    function showError(msg) {
+      errorEl.textContent = msg;
+      errorEl.style.display = 'block';
+      loadingEl.style.display = 'none';
+      resultsEl.style.display = 'none';
+    }
+
+    function hideError() {
+      errorEl.style.display = 'none';
+    }
+
+    async function handleFile(file) {
+      hideError();
+      loadingEl.style.display = 'block';
+      resultsEl.style.display = 'none';
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const detail = data.detail;
+          const msg = Array.isArray(detail) ? detail.map(d => d.msg || JSON.stringify(d)).join('; ') : (detail || data.message || `Error ${res.status}`);
+          showError(msg);
+          return;
+        }
+        analysisData = data;
+        renderResults(data);
+      } catch (e) {
+        showError('Network error: ' + e.message);
+      } finally {
+        loadingEl.style.display = 'none';
+      }
+    }
+
+    function formatMoney(n) {
+      return new Intl.NumberFormat('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+    }
+
+    function showDayModal(dateStr) {
+      if (!analysisData) return;
+      const txs = analysisData.transactions.filter(t => t.date === dateStr);
+      document.getElementById('modalDate').textContent = dateStr;
+      const total = txs.filter(t => t.direction === 'expense').reduce((s, t) => s + Math.abs(t.amount), 0);
+      const html = '<p style="margin-bottom:0.75rem"><strong>Total: ' + formatMoney(total) + '</strong></p>' +
+        '<table><tr><th>Merchant</th><th>Category</th><th>Amount</th></tr>' +
+        txs.map(t => `
+          <tr>
+            <td>${t.merchant || t.merchant_raw}</td>
+            <td>${t.category}</td>
+            <td class="${t.direction === 'expense' ? 'amount-expense' : 'amount-income'}">
+              ${t.direction === 'expense' ? '-' : ''}${formatMoney(Math.abs(t.amount))}
+            </td>
+          </tr>
+        `).join('') + '</table>';
+      document.getElementById('modalBody').innerHTML = html;
+      document.getElementById('dayModal').classList.add('open');
+    }
+
+    function renderResults(data) {
+      resultsEl.style.display = 'block';
+
+      document.getElementById('incomeVal').textContent = formatMoney(data.summary.income);
+      document.getElementById('expensesVal').textContent = formatMoney(data.summary.expenses);
+      document.getElementById('netVal').textContent = formatMoney(data.summary.net);
+
+      const inc = data.income;
+      document.getElementById('incomeInference').innerHTML = `
+        <strong>Inferred income: ${formatMoney(inc.amount)} (confidence: ${(inc.confidence * 100).toFixed(0)}%)</strong>
+        ${inc.explanation}
+      `;
+
+      const catColors = ['#4CAF50','#2196F3','#FF9800','#9C27B0','#FF5722','#00BCD4','#795548','#607D8B','#E91E63','#3F51B5','#8BC34A','#FFC107'];
+
+      if (categoryChart) categoryChart.destroy();
+      categoryChart = new Chart(document.getElementById('categoryChart').getContext('2d'), {
+        type: 'doughnut',
+        data: {
+          labels: data.by_category.map(c => c.category),
+          datasets: [{ data: data.by_category.map(c => c.amount), backgroundColor: catColors }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' } } }
+      });
+
+      if (categoryChart2) categoryChart2.destroy();
+      categoryChart2 = new Chart(document.getElementById('categoryChart2').getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: data.by_category.map(c => c.category),
+          datasets: [{ data: data.by_category.map(c => c.amount), backgroundColor: catColors }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true } } }
+      });
+
+      const dailyLabels = data.daily_spend.map(d => d.date);
+      const dailyData = data.daily_spend.map(d => d.amount);
+      if (dailyChart) dailyChart.destroy();
+      const dailyCtx = document.getElementById('dailyChart').getContext('2d');
+      dailyChart = new Chart(dailyCtx, {
+        type: 'line',
+        data: { labels: dailyLabels, datasets: [{ label: 'Daily spending', data: dailyData, borderColor: '#2563eb', fill: true, tension: 0.5 }] },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { y: { beginAtZero: true } },
+          onClick: (ev, elements) => {
+            if (elements.length) {
+              const idx = elements[0].index;
+              if (dailyLabels[idx]) showDayModal(dailyLabels[idx]);
+            }
+          }
+        }
+      });
+
+      const recurringHtml = data.recurring.length
+        ? '<table><tr><th>Merchant</th><th>Frequency</th><th>Last Amount</th><th>Avg</th><th>Confidence</th></tr>' +
+          data.recurring.map(r => `<tr><td>${r.merchant}</td><td>${r.frequency}</td><td>${formatMoney(r.last_amount)}</td><td>${formatMoney(r.avg_amount)}</td><td>${(r.confidence*100).toFixed(0)}%</td></tr>`).join('') + '</table>'
+        : '<p>No recurring payments detected.</p>';
+      document.getElementById('recurringList').innerHTML = recurringHtml;
+
+      const othersTx = data.transactions.filter(t => t.direction === 'expense' && t.category === 'Other');
+      if (othersTx.length) {
+        const byMerchant = {};
+        let totalOther = 0;
+        othersTx.forEach(t => {
+          const key = (t.merchant || t.merchant_raw || '').trim() || 'Unknown';
+          const amt = Math.abs(t.amount);
+          totalOther += amt;
+          if (!byMerchant[key]) byMerchant[key] = { amount: 0, count: 0 };
+          byMerchant[key].amount += amt;
+          byMerchant[key].count += 1;
+        });
+        const sorted = Object.entries(byMerchant).map(([merchant, v]) => ({ merchant, ...v })).sort((a,b) => b.amount - a.amount);
+        const top = sorted.slice(0, 15);
+        document.getElementById('othersBreakdown').innerHTML =
+          '<p>Total in "Other": <strong>' + formatMoney(totalOther) + '</strong></p>' +
+          '<table><tr><th>Merchant</th><th>Transactions</th><th>Total</th></tr>' +
+          top.map(r => `<tr><td>${r.merchant}</td><td>${r.count}</td><td>${formatMoney(r.amount)}</td></tr>`).join('') + '</table>' +
+          (sorted.length > 15 ? '<p>Showing top 15 of ' + sorted.length + ' merchants.</p>' : '');
+      } else {
+        document.getElementById('othersBreakdown').innerHTML = '<p>No expenses in "Other" category.</p>';
+      }
+
+      const txs = data.transactions;
+      const txsHtml = '<table><tr><th>Date</th><th>Merchant</th><th>Category</th><th>Amount</th></tr>' +
+        txs.map(t => `<tr><td>${t.date}</td><td>${t.merchant || t.merchant_raw}</td><td>${t.category}</td><td class="${t.direction==='expense'?'amount-expense':'amount-income'}">${t.direction==='expense'?'-':''}${formatMoney(Math.abs(t.amount))}</td></tr>`).join('') + '</table>';
+      document.getElementById('transactionsList').innerHTML = txsHtml;
+    }
+  </script>
+</body>
+</html>
