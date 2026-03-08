@@ -1,140 +1,135 @@
-"""PDF statement parser tailored for Turkish bank statements (incl. sample)."""
+"""PDF statement parser — Ziraat Bankası + İş Bankası (Maximum) formats."""
 
 from __future__ import annotations
-
 import re
 from datetime import datetime
 from pathlib import Path
-
 import pdfplumber
-
 from app.models import Transaction
 
 
-def _parse_amount_str(amount_str: str) -> float:
-    """
-    Parse amount from strings like:
-    - 2,034.96-
-    - 25,000.00+
-    - 123,45
-
-    Handles thousand separators and Turkish/EN decimal formats.
-    Always returns a signed float.
-    """
-    if amount_str is None:
-        return 0.0
-
-    s = str(amount_str).strip()
-    if not s:
-        return 0.0
-
-    # Extract sign from trailing +/- if present
-    sign = 1.0
-    if s.endswith("-"):
-        sign = -1.0
+def _parse_amount(s: str) -> tuple[float, str]:
+    s = s.strip()
+    direction = "expense"
+    if s.endswith("+"):
+        direction = "income"
         s = s[:-1]
-    elif s.endswith("+"):
-        sign = 1.0
+    elif s.endswith("-"):
+        direction = "expense"
         s = s[:-1]
 
-    # Remove currency text and spaces
-    s = s.replace("TL", "").replace("tl", "").strip()
+    s = s.replace("TL", "").replace(" ", "").strip()
 
-    # If both ',' and '.' exist -> assume ',' thousands, '.' decimal (e.g. 25,000.00)
-    if "," in s and "." in s:
-        s = s.replace(",", "")
-    # If only ',' present -> treat as decimal separator (Turkish style)
-    elif "," in s and "." not in s:
+    if re.search(r"\d\.\d{3}", s) and "," in s:
         s = s.replace(".", "").replace(",", ".")
-    # Else only '.' or digits -> standard float
+    elif re.search(r"\d,\d{3}", s) and "." in s:
+        s = s.replace(",", "")
+    elif "," in s and "." not in s:
+        s = s.replace(",", ".")
 
-    # Keep only digits and decimal point
-    s = re.sub(r"[^0-9.]", "", s)
+    s = re.sub(r"[^\d.]", "", s)
     try:
-        val = float(s) if s else 0.0
+        return abs(float(s)), direction
     except ValueError:
-        return 0.0
-    return sign * val
+        return 0.0, direction
 
 
-def _parse_date(val) -> datetime | None:
-    """Parse date from string."""
-    if val is None:
-        return None
-    s = str(val).strip()[:10]
-    for fmt in ["%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y"]:
+def _parse_date(s: str) -> datetime | None:
+    s = s.strip()
+    for fmt in ["%d/%m/%Y", "%d.%m.%Y", "%d/%m/%y"]:
         try:
             return datetime.strptime(s, fmt)
         except ValueError:
             continue
+    try:
+        parts = s.split(".")
+        if len(parts) == 3:
+            d, m, y = parts
+            return datetime.strptime(f"{int(d):02d}.{m}.{y}", "%d.%m.%Y")
+    except Exception:
+        pass
     return None
 
 
-def _clean_description(desc: str) -> str:
-    """Strip noisy suffixes like MaxiPuan details."""
-    if not desc:
-        return ""
-    # Remove "KAZANILAN MAXIPUAN:..." fragments
-    desc = re.sub(
-        r"KAZANILAN MAX[İI]PUAN[:：].*",
-        "",
-        desc,
-        flags=re.IGNORECASE,
-    )
-    # Collapse whitespace
+def _clean_desc(desc: str) -> str:
+    desc = re.sub(r"KAZANILAN MAX[İI]PUAN[:：][\d,\.]+", "", desc, flags=re.I)
+    desc = re.sub(r"\(\d+/\d+\s*TK\)\s*[\d.,]+\s*TL", "", desc)
     desc = re.sub(r"\s+", " ", desc).strip()
     return desc
 
 
-def _parse_transaction_line(line: str) -> Transaction | None:
-    """
-    Parse a single statement line in the format seen in sample PDF, e.g.:
+_SKIP_PATTERNS = re.compile(
+    r"(önceki aydan devir|kart no\s*:|işlem tarihi|açıklama|tutar|"
+    r"sözleşme değişikl|faiz ve ücret|devreden bakiye|büyük mükellef|"
+    r"türkiye iş bankası|toplam maxipuan|hesap kesim|son ödeme|"
+    r"müşteri numara|kart numara|hesap özeti|asgari ödeme|"
+    r"devir bakiyesi|dönem faizi|bankkart|taksit faizi|bsmv|kkdf)",
+    re.IGNORECASE,
+)
 
-    19.02.2026 MAPFRE SIGORTA A(2/9 TK) 18,314.62 TL 2,034.96-
-    9.02.2026 2000-3816259 HESAPTAN AKTARIM 2000 İNTERAKTİF 25,000.00+
-    2.02.2026 SAKARYA ADAPAZARI AGORA SAKARYA TR 18.00-
-    """
-    line = line.strip()
-    if not line:
-        return None
+_TX_LINE = re.compile(r"^\d{1,2}[/\.]\d{2}[/\.]\d{4}")
 
-    # Date at start of line
-    m = re.match(r"^(\d{1,2}\.\d{1,2}\.\d{4})\s+(.+)$", line)
+
+def _extract_tx_lines(text: str) -> list[str]:
+    """Extract only transaction lines from page text."""
+    return [l.strip() for l in text.splitlines()
+            if _TX_LINE.match(l.strip()) and not _SKIP_PATTERNS.search(l)]
+
+
+def _parse_ziraat_line(line: str) -> Transaction | None:
+    m = re.match(r"^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+([\d.,]+[+-]?)\s*$", line)
     if not m:
         return None
+    date_str, desc, amt_str = m.groups()
 
-    date_str, rest = m.groups()
+    desc = re.sub(r"\d[\d.,]*\s*TL\s+İşlemin\s+\d+/\d+\s+Taksidi", "", desc).strip()
+    desc = _clean_desc(desc)
+    if not desc:
+        return None
+
     dt = _parse_date(date_str)
     if not dt:
         return None
 
-    # Amount is the last numeric chunk with optional +/- at the end
-    # e.g. "... 2,034.96-" or "... 25,000.00+"
-    amt_match = re.search(r"([0-9][0-9.,]*[+-])\s*$", rest)
-    if not amt_match:
-        # Sometimes sign may be separated by space: "25,000.00 +"
-        amt_match = re.search(r"([0-9][0-9.,]*)\s*([+-])\s*$", rest)
-        if not amt_match:
-            return None
-        amount_str = amt_match.group(1) + amt_match.group(2)
-        desc_part = rest[: amt_match.start()].rstrip()
-    else:
-        amount_str = amt_match.group(1)
-        desc_part = rest[: amt_match.start()].rstrip()
-
-    amount = _parse_amount_str(amount_str)
+    amount, direction = _parse_amount(amt_str)
     if amount == 0:
         return None
 
-    desc = _clean_description(desc_part)
-    if not desc:
+    if re.match(r"^(kredi faizi|taksit faizi|bsmv|kkdf)$", desc, re.I):
         return None
-
-    direction = "expense" if amount < 0 else "income"
 
     return Transaction(
         date=dt.date(),
         merchant_raw=desc,
+        merchant=desc,
+        amount=amount,
+        currency="TRY",
+        direction=direction,
+    )
+
+
+def _parse_isbank_line(line: str) -> Transaction | None:
+    m = re.match(r"^(\d{1,2}\.\d{2}\.\d{4})\s+(.+?)\s+([\d,\.]+[+-])\s*$", line)
+    if not m:
+        return None
+    date_str, desc, amt_str = m.groups()
+
+    desc = _clean_desc(desc)
+    if not desc:
+        return None
+
+    dt = _parse_date(date_str)
+    if not dt:
+        return None
+
+    amount, direction = _parse_amount(amt_str)
+    if amount == 0:
+        return None
+
+    return Transaction(
+        date=dt.date(),
+        merchant_raw=desc,
+        merchant=desc,
         amount=amount,
         currency="TRY",
         direction=direction,
@@ -142,48 +137,49 @@ def _parse_transaction_line(line: str) -> Transaction | None:
 
 
 def parse_pdf(path: Path) -> list[Transaction]:
-    """
-    Parse PDF credit card statement.
-
-    Uses a text-based parser tailored for Turkish card statements, but
-    will treat *any* line that starts with a date (dd.MM.yyyy) as a
-    potential transaction. This makes it more robust across different
-    banks/layouts as long as the PDF contains real text (not scanned
-    images).
-    """
-    transactions: list[Transaction] = []
-
     try:
         with pdfplumber.open(path) as pdf:
+            first_text = pdf.pages[0].extract_text() or ""
+            is_ziraat = "Bankkart" in first_text or "Ziraat" in first_text
+            is_isbank = "MAXİPUAN" in first_text or "Maximum" in first_text or "İş Bankası" in first_text
+
+            # Collect unique page texts — skip pages that are exact duplicates
+            # Ziraat sometimes repeats all pages (landscape summary)
+            seen_page_signatures: set[str] = set()
+            unique_pages: list[str] = []
             for page in pdf.pages:
                 text = page.extract_text() or ""
-                for raw_line in text.splitlines():
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-
-                    # Skip obvious non-transaction / legal text
-                    upper = line.upper()
-                    if line.startswith("*") or "TÜRKİYE İŞ BANKASI" in upper:
-                        continue
-                    if line.startswith("--") and "OF" in upper:
-                        # page marker like \"-- 1 of 2 --\"
-                        continue
-
-                    # Try to parse any date-prefixed line as a transaction
-                    tx = _parse_transaction_line(line)
-                    if tx is not None:
-                        transactions.append(tx)
+                # Signature = sorted tx lines (order-independent duplicate detection)
+                tx_lines = _extract_tx_lines(text)
+                signature = "||".join(sorted(tx_lines))
+                if signature and signature not in seen_page_signatures:
+                    seen_page_signatures.add(signature)
+                    unique_pages.append(text)
 
     except Exception as e:
-        raise ValueError(
-            f"PDF parsing failed: {e}. Please export your statement as CSV and upload that instead."
-        ) from e
+        raise ValueError(f"PDF okunamadı: {e}") from e
+
+    transactions: list[Transaction] = []
+    for text in unique_pages:
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or _SKIP_PATTERNS.search(line):
+                continue
+
+            tx = None
+            if is_ziraat:
+                tx = _parse_ziraat_line(line)
+            elif is_isbank:
+                tx = _parse_isbank_line(line)
+            else:
+                tx = _parse_ziraat_line(line) or _parse_isbank_line(line)
+
+            if tx is not None:
+                transactions.append(tx)
 
     if not transactions:
         raise ValueError(
-            "No transactions could be extracted from the PDF. "
-            "Please export your statement as CSV and upload that instead."
+            "PDF'den işlem çıkarılamadı. Lütfen bankanızın uygulamasından CSV olarak export edip deneyin."
         )
 
     return transactions

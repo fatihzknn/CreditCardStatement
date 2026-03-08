@@ -11,3 +11,23 @@ build/
 dist/
 *.spec.bak
 sample_data/
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.env
+
+# Build
+build/
+dist/
+*.spec
+
+# Database & uploads
+*.db
+uploads/
+
+# Misc
+.DS_Store
+*.zip
+parsers.zip
